@@ -2,6 +2,55 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+import numpy as np
+
+prop_cycle = plt.cm.get_cmap("tab20").colors  # 20 unique colors
+plt.rcParams["axes.prop_cycle"] = plt.cycler(color=prop_cycle)
+
+
+def check_correlation_matrix(mat: np.ndarray, tol=1e-8) -> bool:
+    """
+    Check if a matrix is a valid correlation matrix.
+
+    Conditions:
+    - Square
+    - Symmetric
+    - Diagonal all ones
+    - Positive semi-definite (all eigenvalues >= 0)
+
+    Args:
+        mat: numpy array
+        tol: tolerance for numerical checks
+
+    Returns:
+        bool: True if valid, False otherwise
+    """
+    # Check square
+    if mat.shape[0] != mat.shape[1]:
+        print("❌ Matrix is not square.")
+        return False
+
+    # Check symmetry
+    if not np.allclose(mat, mat.T, atol=tol):
+        print("❌ Matrix is not symmetric.")
+        return False
+
+    # Check diagonal ones
+    if not np.allclose(np.diag(mat), 1, atol=tol):
+        print("❌ Diagonal entries are not all 1.")
+        return False
+
+    # Check positive semidefiniteness
+    eigenvalues = np.linalg.eigvalsh(mat)
+    if np.any(eigenvalues < -tol):  # allow tiny negatives from numerical error
+        print(f"❌ Matrix is not positive semidefinite. Min eigenvalue = {eigenvalues.min():.6f}")
+        return False
+
+    # If all checks passed
+    print("✅ Matrix is a valid correlation matrix.")
+    return True
+
+
 class MTMTDistribution:
     """
     Multi-Trait × Multi-Time population.
@@ -109,24 +158,82 @@ class MTMTDistribution:
         plt.tight_layout()
         return fig, ax
 
-    def plot_population_time_profiles(self, ci='2sd'):
+    def plot_population_time_profiles(
+            self, ci=None, empirical_data=None, show_theoretical=False
+    ):
+        """
+        Plot trajectories across time.
+
+        Args:
+            ci: None | '2sd' (only used if show_theoretical=True)
+            empirical_data: optional DataFrame from simulate(as_df=True)
+            show_theoretical: whether to overlay theoretical curves
+        """
         import matplotlib.pyplot as plt
+        import numpy as np
+        from matplotlib.lines import Line2D
+
         time = np.arange(1, self.T + 1)
-        fig, ax = plt.subplots()
-        for p, name in enumerate(self.trait_names):
-            mean = self.mu[:, p]
-            ax.plot(time, mean, label=name)
-            if ci == '2sd':
-                var_t = np.diag(self.Sigma_time) * self.Sigma_traits[p, p]
-                sd_t = np.sqrt(var_t)
-                ax.fill_between(time, mean - 2 * sd_t, mean + 2 * sd_t, alpha=0.15)
+        fig, ax = plt.subplots(figsize=(7, 5))
+
+        colors = plt.cm.get_cmap("tab20", len(self.trait_names)).colors
+
+        # --- Theoretical profiles (optional) ---
+        if show_theoretical:
+            for p, name in enumerate(self.trait_names):
+                mean = self.mu[:, p]
+                ax.plot(time, mean, lw=2, color=colors[p], label=name)
+
+                if ci == '2sd':
+                    var_t = np.diag(self.Sigma_time) * self.Sigma_traits[p, p]
+                    sd_t = np.sqrt(var_t)
+                    ax.fill_between(time, mean - 2 * sd_t, mean + 2 * sd_t,
+                                    alpha=0.15, color=colors[p])
+
+        # --- Empirical overlay ---
+        if empirical_data is not None:
+            summary = (
+                empirical_data
+                .groupby(["wave", "trait"])["value"]
+                .mean()
+                .reset_index()
+            )
+            for p, name in enumerate(self.trait_names):
+                sub = summary.query("trait == @name")
+                ax.plot(
+                    sub["wave"] + 1,  # +1 if waves are 0-based
+                    sub["value"],
+                    linestyle="--" if show_theoretical else "-",
+                    lw=1.5,
+                    color=colors[p],
+                    label=name if not show_theoretical else None
+                )
+
+        # --- Force full use of canvas ---
+        ax.relim()
+        ax.autoscale_view()
+        ax.margins(y=0.1)
 
         ax.set_xlabel("Wave")
         ax.set_ylabel("Value")
-        ax.set_title("Population Time Profiles (mean ± 2 SD)")
-        ax.set_xticks(time)  # << force integer ticks
-        ax.set_xticklabels([str(t) for t in time])  # << integer-looking labels
-        ax.legend()
+        ax.set_title("Population Time Profiles")
+        ax.set_xticks(time)
+        ax.set_xticklabels([str(t) for t in time])
+
+        # --- Legend ---
+        handles, labels = ax.get_legend_handles_labels()
+
+        if show_theoretical and empirical_data is not None:
+            style_handles = [
+                Line2D([0], [0], color="black", lw=2, linestyle="-", label="Theoretical"),
+                Line2D([0], [0], color="black", lw=2, linestyle="--", label="Empirical")
+            ]
+            ax.legend(handles + style_handles,
+                      labels + [h.get_label() for h in style_handles],
+                      ncol=2, fontsize="small")
+        else:
+            ax.legend(ncol=2, fontsize="small")
+
         plt.tight_layout()
         return fig, ax
 

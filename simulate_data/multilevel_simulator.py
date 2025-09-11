@@ -2,13 +2,9 @@ from simulate_data.multitrait_multitime_distribution import MTMTDistribution
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
-
-# -*- coding: utf-8 -*-
+import seaborn as sns
 import os
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+
 
 # -----------------------------
 # Boss-ready plotting helpers
@@ -211,7 +207,7 @@ def make_boss_plots(df_indiv, df_meta, level_names, var_shares, outdir="plots",
 
 
 
-class SymmetricWithOverridesSimulator:
+class SymmetricMTMT:
     """
     Symmetric (balanced) multilevel simulator with easy ragged overrides.
 
@@ -382,6 +378,132 @@ class SymmetricWithOverridesSimulator:
         df_meta = pd.DataFrame(meta_rows)
         return df_indiv, df_meta
 
+    @staticmethod
+    def plot_individual_profiles(df_indiv, n_indiv=10, traits=None, facet_by_trait=False, col_wrap=3):
+        """
+        Plot a few individual trajectories across waves.
+
+        Args:
+            df_indiv : DataFrame (from simulate)
+            n_indiv : number of individuals to sample
+            traits : list of traits to include (default = all)
+            facet_by_trait : if True, plot separate panels per trait
+            col_wrap : number of columns when facetting
+        """
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+
+        # Filter traits if requested
+        if traits is not None:
+            data = df_indiv[df_indiv["trait"].isin(traits)]
+        else:
+            data = df_indiv
+
+        # Subsample individuals
+        all_ids = data["person_id"].unique()
+        if n_indiv < len(all_ids):
+            sample_ids = pd.Series(all_ids).sample(n_indiv)
+            data = data[data["person_id"].isin(sample_ids)]
+
+        if facet_by_trait:
+            g = sns.relplot(
+                data=data, kind="line",
+                x="wave", y="value",
+                hue="person_id", units="person_id",
+                col="trait", col_wrap=col_wrap,
+                estimator=None, lw=1, alpha=0.7, palette="tab20"
+            )
+            g.set_titles("Trait: {col_name}")
+            g.set_axis_labels("Wave", "Value")
+            g.tight_layout()
+        else:
+            plt.figure(figsize=(8, 5))
+            sns.lineplot(
+                data=data, x="wave", y="value",
+                hue="person_id", style="trait",
+                estimator=None, units="person_id", lw=1, alpha=0.7
+            )
+            plt.title("Sample of Individual Trajectories")
+            plt.xlabel("Wave")
+            plt.ylabel("Value")
+            plt.tight_layout()
+
+    @staticmethod
+    def plot_trait_means(
+            df_indiv,
+            group_level=None,
+            ci=95,
+            max_groups=10,
+            random_state=123):
+        """
+        Plot average trajectories per trait (optionally grouped by a higher-level node).
+
+        Args:
+            df_indiv : DataFrame
+            group_level : str or None
+                Column to group by (e.g. "level_0", "level_1").
+            ci : int or None
+                Confidence interval for seaborn lineplot.
+            max_groups : int
+                Maximum number of groups to plot (if more exist, sample).
+            random_state : int
+                Seed for reproducible sampling of groups.
+        """
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+
+        plt.figure(figsize=(8, 5))
+
+        if group_level is None:
+            sns.lineplot(data=df_indiv, x="wave", y="value", hue="trait", ci=ci)
+        else:
+            groups = df_indiv[group_level].dropna().unique()
+            if len(groups) > max_groups:
+                groups = pd.Series(groups).sample(max_groups, random_state=random_state)
+                df_plot = df_indiv[df_indiv[group_level].isin(groups)]
+            else:
+                df_plot = df_indiv
+
+            sns.lineplot(
+                data=df_plot, x="wave", y="value",
+                hue="trait", style=group_level, ci=ci
+            )
+
+        plt.title("Mean Trajectories")
+        plt.tight_layout()
+
+    @staticmethod
+    def plot_group_centers(df_meta, level_name):
+        """
+        Plot group centers from df_meta for a given level.
+        """
+        centers = df_meta[df_meta["level_name"] == level_name]
+        traits = [c for c in centers.columns if c not in ["level_index", "level_name", "path", "sd_scale"]]
+        plt.figure(figsize=(8, 5))
+        for _, row in centers.iterrows():
+            vals = row[traits].values
+            plt.plot(vals, label=row["path"])
+        plt.xticks(range(len(traits)), traits, rotation=45)
+        plt.title(f"Group Centers at {level_name}")
+        plt.legend(fontsize="x-small", ncol=2)
+        plt.tight_layout()
+
+    @staticmethod
+    def plot_distribution(df_indiv, trait, wave=None):
+        """
+        Histogram / KDE of a given trait (optionally at one wave).
+        """
+        data = df_indiv[df_indiv["trait"] == trait]
+        if wave is not None:
+            data = data[data["wave"] == wave]
+        plt.figure(figsize=(6, 4))
+        sns.histplot(data["value"], kde=True, color="tab:blue")
+        title = f"Distribution of {trait}"
+        if wave is not None:
+            title += f" at wave {wave}"
+        plt.title(title)
+        plt.tight_layout()
+
 
 
 
@@ -415,7 +537,7 @@ if __name__ == "__main__":
         "Org2.Team2": 20,  # Team2 inside Org2 has 20 people (others have 10)
     }
 
-    sim = SymmetricWithOverridesSimulator(
+    sim = SymmetricMTMT(
         base=pop,
         level_names=level_names,
         var_shares=var_shares,
