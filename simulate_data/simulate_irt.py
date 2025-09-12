@@ -6,56 +6,37 @@ class IRTItem:
     """Base class for IRT items."""
 
     def __init__(self, discrimination=1.0, difficulty=0.0):
-        # discrimination can be scalar or vector (for multidimensional models)
         self.a = np.atleast_1d(discrimination).astype(float)
-        self.b = difficulty  # may be None for polytomous models (GRM/Hybrid)
+        self.b = difficulty  # may be None for polytomous models
+
+    def _ensure_matrix(self, theta):
+        """Always return theta as 2D array (n_persons, n_dim)."""
+        theta = np.asarray(theta)
+        if theta.ndim == 1:
+            return theta[:, None]
+        return theta
 
     def _linear_predictor(self, theta):
-        """
-        Compute z = theta @ a - b, robust to 1D or 2D theta and optional b=None.
-        theta:
-          - shape (n_persons,) for 1D models (plot grids or 1D sims)
-          - shape (n_persons, n_dim) for multi-D models
-        returns:
-          - shape (n_persons,)
-        """
-        theta = np.asarray(theta)
-
-        # Case: unidimensional theta grid or vector of persons
-        if theta.ndim == 1 and self.a.size == 1:
-            z = self.a[0] * theta
-            if self.b is not None:
-                z = z - self.b
-            return z
-
-        # Case: multidimensional persons (n_persons, n_dim)
-        if theta.ndim == 2:
-            z = theta @ self.a
-            if self.b is not None:
-                z = z - self.b
-            return z
-
-        raise ValueError("Unsupported shape for theta or discrimination.")
+        """Compute z = theta @ a - b. Always returns (n,)."""
+        theta = self._ensure_matrix(theta)
+        z = theta @ self.a[:, None]  # (n,1)
+        z = z.ravel()
+        if self.b is not None:
+            z = z - self.b
+        return z
 
     def _prepare_theta_for_plot(self, theta_range, n_points):
-        """
-        Generate theta grid for plotting. If item is multidimensional, vary the first
-        factor across the grid and set all remaining factors to zero.
-        Returns:
-          - 1D array for unidimensional items (n_points,)
-          - 2D array for multidimensional items (n_points, n_dim)
-        """
+        """Grid for plotting. If multi-D, vary first factor, fix others at 0."""
         theta = np.linspace(*theta_range, n_points)
         if self.a.size > 1:
-            # Multi-D: vary factor 0, hold others at 0
             theta = np.column_stack([theta, np.zeros((n_points, self.a.size - 1))])
         return theta
 
     def simulate(self, theta):
-        raise NotImplementedError("Subclasses must implement simulate()")
+        raise NotImplementedError
 
     def plot(self, theta_range=(-4, 4), n_points=200, cumulative=False):
-        raise NotImplementedError("Subclasses must implement plot()")
+        raise NotImplementedError
 
 
 # ---------------------------
@@ -64,6 +45,13 @@ class IRTItem:
 
 class IRT2PLItem(IRTItem):
     """2PL binary item."""
+    def __init__(self, discrimination=None, difficulty=None):
+        if discrimination is None:
+            discrimination = np.random.uniform(0.5, 2.0)   # slopes
+        if difficulty is None:
+            difficulty = np.random.uniform(-2, 2)          # threshold
+        super().__init__(discrimination, difficulty)
+
 
     def p_correct(self, theta):
         z = self._linear_predictor(theta)
@@ -90,10 +78,16 @@ class IRT2PLItem(IRTItem):
 
 class IRT3PLItem(IRT2PLItem):
     """3PL binary item with guessing parameter c."""
-
-    def __init__(self, discrimination=1.0, difficulty=0.0, guessing=0.2):
+    def __init__(self, discrimination=None, difficulty=None, guessing=None):
+        if discrimination is None:
+            discrimination = np.random.uniform(0.5, 2.0)
+        if difficulty is None:
+            difficulty = np.random.uniform(-2, 2)
+        if guessing is None:
+            guessing = np.random.uniform(0.05, 0.25)
         super().__init__(discrimination, difficulty)
         self.c = guessing
+
 
     def p_correct(self, theta):
         z = self._linear_predictor(theta)
@@ -117,25 +111,47 @@ class IRT3PLItem(IRT2PLItem):
 # ---------------------------
 # Polytomous items
 # ---------------------------
-
 class GradedResponseItem(IRTItem):
-    """Samejima's GRM for ordinal items."""
+    """Samejima's GRM for ordinal items, with conversion to/from mirt-style d."""
 
-    def __init__(self, discrimination=1.0, thresholds=None):
-        # For GRM, 'difficulty' is represented by thresholds; set b=None
-        super().__init__(discrimination, difficulty=None)
-        if thresholds is None:
-            raise ValueError("GRM requires thresholds.")
-        self.thresholds = np.array(thresholds, dtype=float)
+    def __init__(self, discrimination=None, thresholds=None, d=None, n_cats=5):
+        if discrimination is None:
+            discrimination = np.random.uniform(0.5, 2.0)
+        self.a = np.atleast_1d(discrimination).astype(float)
+
+        # Option 1: user provides Samejima thresholds b
+        if thresholds is not None:
+            self.b = np.array(thresholds, dtype=float)
+
+        # Option 2: user provides mirt d-parameters
+        elif d is not None:
+            d = np.array(d, dtype=float)
+            self.b = -d / self.a[0]
+
+        # Option 3: generate random thresholds
+        else:
+            self.b = np.sort(np.random.uniform(-2, 2, size=n_cats - 1))
+
+        self.b_global = None  # no global difficulty
+
+    # --- aliases ---
+    @property
+    def thresholds(self):
+        return self.b
+
+    @property
+    def kappa(self):
+        return self.b
+
+    @property
+    def d(self):
+        """mirt-style step parameters (vector)"""
+        return -self.a[0] * self.b
 
     def category_probs(self, theta):
-        """
-        Returns:
-          probs: (n_persons, n_categories)
-          Pstar: (n_persons, n_thresholds+2) cumulative boundaries [1, P*_1..P*_{m-1}, 0]
-        """
-        z_core = self._linear_predictor(theta)  # shape (n_persons,)
-        z = z_core[:, None] - self.thresholds[None, :]  # (n_persons, m-1)
+        theta = self._ensure_matrix(theta)
+        z_core = (theta @ self.a[:, None]).ravel()[:, None]
+        z = z_core - self.b[None, :]
         Pstar_inner = 1 / (1 + np.exp(-z))
         Pstar = np.hstack([
             np.ones((Pstar_inner.shape[0], 1)),
@@ -155,7 +171,7 @@ class GradedResponseItem(IRTItem):
         theta = self._prepare_theta_for_plot(theta_range, n_points)
         probs, Pstar = self.category_probs(theta)
         x = theta if np.asarray(theta).ndim == 1 else theta[:, 0]
-        title_suffix = f"(a={self.a})"
+        title_suffix = f"(a={self.a}, b={self.b}, d={self.d})"
 
         if cumulative:
             for k in range(1, Pstar.shape[1] - 1):
@@ -175,33 +191,37 @@ class GradedResponseItem(IRTItem):
         plt.show()
 
 
-class HybridOrdinalItem(IRTItem):
-    """
-    Hybrid ordinal item with threshold-specific slopes.
-    discrimination: scalar or vector (n_dim) loading on latent vector
-    difficulties: thresholds (length = n_cat - 1)
-    slopes: per-threshold discriminations (length = n_cat - 1)
-    """
 
-    def __init__(self, discrimination=1.0, difficulties=None, slopes=None):
+class HybridOrdinalItem(IRTItem):
+    """Hybrid ordinal item with threshold-specific slopes."""
+    def __init__(self, discrimination=None, difficulties=None, slopes=None, n_cats=4):
+        if discrimination is None:
+            discrimination = np.random.uniform(0.5, 2.0)
         if difficulties is None:
-            raise ValueError("HybridOrdinalItem requires difficulties (thresholds).")
-        self.difficulties = np.array(difficulties, dtype=float)
-        self.slopes = (
-            np.array(slopes, dtype=float)
-            if slopes is not None
-            else np.repeat(np.atleast_1d(discrimination).astype(float)[0], len(self.difficulties))
-        )
-        # store 'a' as vector (n_dim) for multi-D; no global b here
+            difficulties = np.sort(np.random.uniform(-2, 2, size=n_cats - 1))
+        if slopes is None:
+            slopes = np.random.uniform(0.5, 2.0, size=len(difficulties))
+        self.b = np.array(difficulties, dtype=float)
+        self.slopes = np.array(slopes, dtype=float)
         self.a = np.atleast_1d(discrimination).astype(float)
-        self.b = None
+        self.b_global = None
+
+    @property
+    def thresholds(self):
+        return self.b
+
+    @property
+    def kappa(self):
+        return self.b
+
+    @property
+    def d(self):
+        return -self.b
 
     def category_probs(self, theta):
-        theta = np.asarray(theta)
-        if theta.ndim == 1:
-            theta = theta[:, None]
-        z_core = theta @ self.a[:, None]  # (n_persons, 1)
-        z = self.slopes[None, :] * (z_core - self.difficulties[None, :])
+        theta = self._ensure_matrix(theta)
+        z_core = (theta @ self.a[:, None])  # (n,1)
+        z = self.slopes[None, :] * (z_core - self.b[None, :])
         Pstar_inner = 1 / (1 + np.exp(-z))
         Pstar = np.hstack([
             np.ones((Pstar_inner.shape[0], 1)),
@@ -221,7 +241,7 @@ class HybridOrdinalItem(IRTItem):
         theta = self._prepare_theta_for_plot(theta_range, n_points)
         probs, Pstar = self.category_probs(theta)
         x = theta if np.asarray(theta).ndim == 1 else theta[:, 0]
-        title_suffix = f"(a={self.a}, slopes={self.slopes})"
+        title_suffix = f"(a={self.a}, b={self.b}, d={self.d}, slopes={self.slopes})"
 
         if cumulative:
             for k in range(1, Pstar.shape[1] - 1):
@@ -243,23 +263,20 @@ class HybridOrdinalItem(IRTItem):
 
 class NominalResponseItem(IRTItem):
     """Bock's NRM for nominal categories."""
-
-    def __init__(self, slopes, intercepts):
-        # slopes shape: (n_dim, n_categories) or (1, n_categories)
+    def __init__(self, slopes=None, intercepts=None, n_cats=3, n_dim=1):
+        if slopes is None:
+            slopes = np.random.uniform(-1, 1, size=(n_dim, n_cats))
+        if intercepts is None:
+            intercepts = np.random.uniform(-1, 1, size=n_cats)
         self.slopes = np.atleast_2d(slopes).astype(float)
         self.intercepts = np.array(intercepts, dtype=float)
-        if self.slopes.shape[1] != len(self.intercepts):
-            raise ValueError("slopes must have shape (n_dim, n_categories) to match intercepts length.")
-        # no global difficulty b
         self.b = None
-        # keep a for consistency in plotting helper (dimension awareness)
         self.a = np.ones(self.slopes.shape[0], dtype=float)
 
+
     def category_probs(self, theta):
-        theta = np.asarray(theta)
-        if theta.ndim == 1:  # plotting grid or 1D sims
-            theta = theta[:, None]  # shape (n_points, 1)
-        z = theta @ self.slopes + self.intercepts[None, :]  # (n_persons, n_cat)
+        theta = self._ensure_matrix(theta)
+        z = theta @ self.slopes + self.intercepts[None, :]
         z_shift = z - np.max(z, axis=1, keepdims=True)
         expz = np.exp(z_shift)
         probs = expz / expz.sum(axis=1, keepdims=True)
@@ -274,7 +291,6 @@ class NominalResponseItem(IRTItem):
         probs = self.category_probs(theta)
         x = theta if np.asarray(theta).ndim == 1 else theta[:, 0]
         title_suffix = f"(slopes shape={self.slopes.shape})"
-
         for k in range(probs.shape[1]):
             plt.plot(x, probs[:, k], label=f"Category {k}")
         plt.title("NRM Category Response Curves " + title_suffix)
@@ -292,13 +308,13 @@ class NominalResponseItem(IRTItem):
 if __name__ == "__main__":
     np.random.seed(123)
 
-    theta_trait = np.random.normal(0, 1, size=200)              # main latent trait
-    theta_method = np.random.normal(0, 1, size=200)             # method factor
-    theta_2d = np.column_stack([theta_trait, theta_method])     # persons × 2 dims
+    theta_trait = np.random.normal(0, 1, size=200)
+    theta_method = np.random.normal(0, 1, size=200)
+    theta_2d = np.column_stack([theta_trait, theta_method])
 
     # --- 2PL ---
     print("\n--- 2PL ---")
-    item_trait = IRT2PLItem(discrimination=1.0, difficulty=0.0)  # trait only
+    item_trait = IRT2PLItem(discrimination=1.0, difficulty=0.0)
     item_trait.plot()
     print("2PL trait-only simulate:", item_trait.simulate(theta_trait)[:10])
 
