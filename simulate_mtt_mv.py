@@ -1,5 +1,5 @@
 from simulate_data.multilevel_simulator import MTMTDistribution, SymmetricMTMT
-from simulate_data.simulate_irt import GradedResponseItem
+from simulate_data.simulate_irt import GradedResponseItem, ItemBank
 import numpy as np
 from matplotlib import pyplot as plt
 import numpy as np
@@ -54,7 +54,7 @@ pop.plot_population_time_profiles(empirical_data=df_sim)
 plt.show()
 
 level_names = ["Org", "Team", "Indiv"]
-var_shares = [0.1, 0.2, 0.70]  # sums to 1 → Org 5%, Team 15%, Indiv 80%
+var_shares = [0.1, 0.2, 0.70]
 default_branching = [3, 100, 10]
 
 sim = SymmetricMTMT(
@@ -64,10 +64,22 @@ sim = SymmetricMTMT(
     default_branching=default_branching,
 )
 
+# Step 1: simulate latent long data
 df_indiv, df_meta = sim.simulate(seed=2026)
 
-itemgrm = GradedResponseItem(1.0, [-1, 0, 1, 2])
-itemgrm.simulate(df_indiv["value"].values)
+# Step 2: reshape into wide DataFrame (outside ItemBank)
+df_wide = df_indiv.pivot_table(index=["person_id","wave"],
+                               columns="trait",
+                               values="value").reset_index()
+
+# Step 3: create ItemBank
+bank = ItemBank(item_type="GRM", n_items=5, latent_dims="Zuversicht")
+
+# Step 4: pass wide latent scores to simulate
+resp_matrix = bank.simulate(df_wide[["Zuversicht"]])
+
+print(resp_matrix.shape)   # (n_persons * waves, n_items)
+
 
 
 
